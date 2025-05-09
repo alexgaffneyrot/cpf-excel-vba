@@ -1,40 +1,31 @@
-Sub ResetSheetsFromMaster()
-    Dim wsMaster As Worksheet, wsTarget As Worksheet, sht As Worksheet
-    Dim rowIndex As Long, targetRow As Long
+Sub ResetSheetsFromMaster_Optimized()
+    Dim wsMaster As Worksheet, wsTarget As Worksheet
+    Dim sheetDict As Object, sheetName As Variant
+    Dim lastRow As Long, destRow As Long
     Dim mrnCol As Long, nameCol As Long, consentCol As Long, hrcpCol As Long, cpCol As Long
-    Dim cell As Range
-    Dim sheetDict As Object, processedDict As Object
-    Dim consentValue As String, hrcpValue As String, cpValue As String
+    Dim row As Long
     Dim key As String
-    Dim allSheets As Collection
-    Dim lastCol As Long, r As Long, c As Long
-    Dim headerRow As Range
+    Dim dataDict As Object
+    Dim cell As Range
 
-    On Error GoTo Cleanup
-
-    Application.EnableEvents = False
     Application.ScreenUpdating = False
     Application.Calculation = xlCalculationManual
+    Application.EnableEvents = False
 
     Set wsMaster = ThisWorkbook.Sheets("Master")
     Set sheetDict = CreateObject("Scripting.Dictionary")
-    Set processedDict = CreateObject("Scripting.Dictionary")
-    Set allSheets = New Collection
+    sheetDict.Add "Consented", "yes"
+    sheetDict.Add "Declined", "declined"
+    sheetDict.Add "Not Approached", "not approached"
+    sheetDict.Add "Has Forms", "has forms"
+    sheetDict.Add "Outborn", "outborn"
+    sheetDict.Add "Lost to FU", "lost to f/u"
+    sheetDict.Add "RIP", "rip"
 
-    ' Sheet mapping for Consent
-    sheetDict.Add "Yes", "Consented"
-    sheetDict.Add "Declined", "Declined"
-    sheetDict.Add "Has Forms", "Has Forms"
-    sheetDict.Add "Outborn", "Outborn"
-    sheetDict.Add "Not Approached", "Not Approached"
-
-    ' Add all target sheets
-    For Each sht In ThisWorkbook.Sheets
-        If sht.Name <> "Master" Then allSheets.Add sht
-    Next sht
-
-    ' Identify column positions
+    ' Identify column indexes
+    Debug.Print "-- Column Identification --"
     For Each cell In wsMaster.Rows(1).Cells
+        Debug.Print "Found Header: " & cell.Value
         Select Case LCase(Trim(cell.Value))
             Case "mrn": mrnCol = cell.Column
             Case "name": nameCol = cell.Column
@@ -44,69 +35,86 @@ Sub ResetSheetsFromMaster()
         End Select
     Next cell
 
-    If mrnCol = 0 Or nameCol = 0 Or consentCol = 0 Or hrcpCol = 0 Or cpCol = 0 Then GoTo Cleanup
+    Debug.Print "MRN Column: " & mrnCol & " | Name Column: " & nameCol & " | Consent Column: " & consentCol
+    Debug.Print "HRCP Column: " & hrcpCol & " | CP Column: " & cpCol
 
-    ' Get last used column and header
-    lastCol = wsMaster.Cells(1, wsMaster.Columns.Count).End(xlToLeft).Column
-    Set headerRow = wsMaster.Range(wsMaster.Cells(1, 1), wsMaster.Cells(1, lastCol))
+    If mrnCol = 0 Or nameCol = 0 Or consentCol = 0 Then
+        MsgBox "Columns missing or header names do not match. Please check the headers.", vbCritical
+        GoTo Cleanup
+    End If
 
-    ' Clear and reformat each sheet
-    For Each sht In allSheets
-        With sht
-            .Rows("2:" & .Rows.Count).Clear
-            headerRow.Copy Destination:=.Range("A1")
-            ' Copy formats (not just values)
-            headerRow.Copy
-            .Range("A1").PasteSpecial Paste:=xlPasteFormats
-        End With
-    Next sht
+    ' Find last row in the Master sheet dynamically
+    lastRow = wsMaster.Cells(wsMaster.Rows.Count, mrnCol).End(xlUp).Row
+    Debug.Print "Last Row Identified: " & lastRow
 
-    ' Loop through Master and copy rows
-    For rowIndex = 2 To wsMaster.Cells(wsMaster.Rows.Count, nameCol).End(xlUp).Row
-        If Trim(wsMaster.Cells(rowIndex, nameCol).Value) = "" Then GoTo NextRow
+    If lastRow < 2 Then
+        MsgBox "No data found in the Master sheet.", vbExclamation
+        GoTo Cleanup
+    End If
 
-        key = Trim(wsMaster.Cells(rowIndex, mrnCol).Value) & "|" & Trim(wsMaster.Cells(rowIndex, nameCol).Value)
-        If processedDict.exists(key) Then GoTo NextRow
-        processedDict.Add key, True
-
-        ' Copy to Consent sheet
-        consentValue = Trim(wsMaster.Cells(rowIndex, consentCol).Value)
-        If sheetDict.exists(consentValue) Then
-            Set wsTarget = ThisWorkbook.Sheets(sheetDict(consentValue))
-            targetRow = wsTarget.Cells(wsTarget.Rows.Count, nameCol).End(xlUp).Row + 1
-            wsMaster.Rows(rowIndex).Copy Destination:=wsTarget.Rows(targetRow)
+    ' Clear all target sheets and restore headers
+    For Each sheetName In sheetDict.Keys
+        On Error Resume Next
+        Set wsTarget = ThisWorkbook.Sheets(sheetName)
+        On Error GoTo 0
+        If Not wsTarget Is Nothing Then
+            wsTarget.Cells.ClearContents
+            wsMaster.Rows(1).Copy Destination:=wsTarget.Rows(1)
+            Debug.Print "Cleared and reset sheet: " & sheetName
+        Else
+            Debug.Print "Sheet not found: " & sheetName
         End If
+    Next sheetName
 
-        ' Copy to HRCPCP if HRCP or CP = Yes
-        hrcpValue = LCase(Trim(wsMaster.Cells(rowIndex, hrcpCol).Value))
-        cpValue = LCase(Trim(wsMaster.Cells(rowIndex, cpCol).Value))
-        If hrcpValue = "yes" Or cpValue = "yes" Then
-            Set wsTarget = ThisWorkbook.Sheets("HRCPCP")
-            targetRow = wsTarget.Cells(wsTarget.Rows.Count, nameCol).End(xlUp).Row + 1
-            wsMaster.Rows(rowIndex).Copy Destination:=wsTarget.Rows(targetRow)
-        End If
+    ' Clear HRCPCP sheet
+    Set wsTarget = ThisWorkbook.Sheets("HRCPCP")
+    wsTarget.Cells.ClearContents
+    wsMaster.Rows(1).Copy Destination:=wsTarget.Rows(1)
+    Debug.Print "Cleared and reset sheet: HRCPCP"
 
-NextRow:
-    Next rowIndex
+    ' Initialize Dictionary for duplicate tracking
+    Set dataDict = CreateObject("Scripting.Dictionary")
 
-    ' Reapply dropdowns and formatting from Master to each sheet
-    For Each sht In allSheets
-        With sht
-            For c = 1 To lastCol
-                If wsMaster.Cells(2, c).Validation.Type <> -1 Then
-                    .Range(.Cells(2, c), .Cells(.Rows.Count, c)).Validation.Delete
-                    wsMaster.Cells(2, c).Copy
-                    .Cells(2, c).PasteSpecial Paste:=xlPasteValidation
+    ' Loop through master sheet rows
+    Debug.Print "-- Row Loop Start --"
+    For row = 2 To lastRow
+        Dim mrnVal As String: mrnVal = LCase(Trim(wsMaster.Cells(row, mrnCol).Value))
+        Dim nameVal As String: nameVal = LCase(Trim(wsMaster.Cells(row, nameCol).Value))
+        Dim consentVal As String: consentVal = LCase(Trim(wsMaster.Cells(row, consentCol).Value))
+        Dim hrcpVal As String: hrcpVal = LCase(Trim(wsMaster.Cells(row, hrcpCol).Value))
+        Dim cpVal As String: cpVal = LCase(Trim(wsMaster.Cells(row, cpCol).Value))
+
+        Debug.Print "Row " & row & " | MRN: " & mrnVal & " | Name: " & nameVal & " | Consent: " & consentVal
+        Debug.Print "HRCP: " & hrcpVal & " | CP: " & cpVal
+
+        If mrnVal <> "" And nameVal <> "" Then
+            key = nameVal & "|" & mrnVal
+
+            If Not dataDict.Exists(key) Then
+                dataDict.Add key, True
+
+                ' Consent-based sheets
+                If sheetDict.Exists(consentVal) Then
+                    Set wsTarget = ThisWorkbook.Sheets(sheetDict(consentVal))
+                    destRow = wsTarget.Cells(wsTarget.Rows.Count, 1).End(xlUp).Row + 1
+                    wsMaster.Rows(row).Copy Destination:=wsTarget.Rows(destRow)
+                    Debug.Print "Copied to sheet: " & sheetDict(consentVal)
                 End If
-            Next c
-        End With
-    Next sht
+
+                ' HRCPCP sheet logic
+                If hrcpVal = "yes" Or cpVal = "yes" Then
+                    Set wsTarget = ThisWorkbook.Sheets("HRCPCP")
+                    destRow = wsTarget.Cells(wsTarget.Rows.Count, 1).End(xlUp).Row + 1
+                    wsMaster.Rows(row).Copy Destination:=wsTarget.Rows(destRow)
+                    Debug.Print "Copied to HRCPCP"
+                End If
+            End If
+        End If
+    Next row
 
 Cleanup:
-    Application.CutCopyMode = False
     Application.EnableEvents = True
-    Application.ScreenUpdating = True
     Application.Calculation = xlCalculationAutomatic
-    MsgBox "Reset complete!"
+    Application.ScreenUpdating = True
+    MsgBox "Sheets reset successfully from Master.", vbInformation
 End Sub
-
